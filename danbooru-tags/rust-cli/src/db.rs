@@ -11,12 +11,124 @@ pub struct DbRow {
     pub aliases: String,
 }
 
-pub fn db_exists() -> bool {
-    find_asset("tags_index.sqlite").is_some()
+/// Environment variable that overrides index discovery with an explicit path.
+pub const DB_ENV_VAR: &str = "DANBOORU_TAGS_DB";
+
+const DB_FILE: &str = "tags_index.sqlite";
+const EXTENDED_ARTISTS_FILE: &str = "artists_extended.txt";
+const PARENT_LEVELS: usize = 3;
+
+/// Resolve the tag index path.
+///
+/// Lookup order:
+/// 1. `$DANBOORU_TAGS_DB` (must exist; never falls through silently)
+/// 2. directory of the running executable and up to 3 of its parents (symlinks resolved)
+/// 3. directory of the invocation path (`argv[0]`, PATH-resolved) and its parents
+/// 4. current working directory
+///
+/// No build-time path is embedded, so a relocated binary never silently reads a
+/// stale index location.
+pub fn db_path() -> Result<PathBuf> {
+    if let Some(raw) = env::var_os(DB_ENV_VAR) {
+        let value = raw.to_string_lossy().trim().to_string();
+        if value.is_empty() {
+            return Err(anyhow!("{DB_ENV_VAR} is set but empty"));
+        }
+        let path = PathBuf::from(&value);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(anyhow!(
+            "{DB_ENV_VAR} points to a missing file: {}",
+            path.display()
+        ));
+    }
+
+    let dirs = candidate_dirs();
+    for dir in &dirs {
+        let candidate = dir.join(DB_FILE);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(anyhow!(
+        "{DB_FILE} not found. searched: {}. set {DB_ENV_VAR}=/abs/path/{DB_FILE} or keep the index next to the executable",
+        dirs.iter()
+            .map(|dir| dir.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+/// Directories searched for index assets, in priority order and de-duplicated.
+pub fn candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Ok(exe) = env::current_exe() {
+        push_dir_with_parents(&mut dirs, &exe, PARENT_LEVELS);
+    }
+
+    if let Some(argv0) = env::args_os().next() {
+        let raw = PathBuf::from(argv0);
+        let resolved = if raw.is_absolute() || raw.components().count() > 1 {
+            Some(raw)
+        } else {
+            env::var_os("PATH").and_then(|value| {
+                env::split_paths(&value)
+                    .map(|dir| dir.join(&raw))
+                    .find(|candidate| candidate.is_file())
+            })
+        };
+        if let Some(path) = resolved {
+            push_dir_with_parents(&mut dirs, &path, PARENT_LEVELS);
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        push_dir(&mut dirs, cwd);
+    }
+
+    dirs
+}
+
+fn push_dir_with_parents(dirs: &mut Vec<PathBuf>, file_path: &Path, levels: usize) {
+    let mut current = file_path.parent().map(Path::to_path_buf);
+    let mut remaining = levels;
+    while let Some(dir) = current {
+        push_dir(dirs, dir.clone());
+        if remaining == 0 {
+            break;
+        }
+        remaining -= 1;
+        current = dir.parent().map(Path::to_path_buf);
+    }
+}
+
+fn push_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    if !dirs.iter().any(|existing| existing == &dir) {
+        dirs.push(dir);
+    }
+}
+
+/// Index statistics used by `--check-index` as a liveness probe.
+///
+/// Fails when the index cannot be resolved or opened, so callers never mistake a
+/// missing index for "no matching tag".
+pub fn index_stats() -> Result<(PathBuf, i64, i64)> {
+    let path = db_path()?;
+    let conn = open_connection()?;
+    let tags: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))?;
+    let groups: i64 = conn.query_row("SELECT COUNT(*) FROM tag_groups", [], |row| row.get(0))?;
+    Ok((path, tags, groups))
 }
 
 pub fn load_extended_artists() -> Result<Vec<String>> {
-    let Some(path) = find_asset("artists_extended.txt") else {
+    let Some(path) = find_asset(EXTENDED_ARTISTS_FILE) else {
+        eprintln!("warning: {EXTENDED_ARTISTS_FILE} not found in the searched directories; --extended has no extra artists to draw from");
         return Ok(Vec::new());
     };
     let data = std::fs::read_to_string(&path)
@@ -41,7 +153,7 @@ pub fn query_artist_tags() -> Result<Vec<String>> {
 }
 
 pub fn query_random_pool(category: &str, group_name: &str, min_count: i64) -> Result<Vec<DbRow>> {
-    if !db_exists() || category.is_empty() {
+    if category.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -86,7 +198,7 @@ pub fn query_rows(
     keyword_terms: &[String],
     limit: usize,
 ) -> Result<Vec<DbRow>> {
-    if !db_exists() || category.is_empty() {
+    if category.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -147,7 +259,7 @@ pub fn query_exact_rows(
     primary_norm: &str,
     limit: usize,
 ) -> Result<Vec<DbRow>> {
-    if !db_exists() || category.is_empty() {
+    if category.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -196,37 +308,16 @@ pub fn query_exact_rows(
 }
 
 fn open_connection() -> Result<Connection> {
-    let path = find_asset("tags_index.sqlite")
-        .ok_or_else(|| anyhow!("tags_index.sqlite not found near the executable"))?;
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .context("failed to open tags_index.sqlite")
+    let path = db_path()?;
+    Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open {}", path.display()))
 }
 
-fn find_asset(file_name: &str) -> Option<PathBuf> {
-    for dir in search_dirs() {
-        let candidate = dir.join(file_name);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(exe) = env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            dirs.push(dir.to_path_buf());
-            if let Some(parent) = dir.parent() {
-                dirs.push(parent.to_path_buf());
-            }
-        }
-    }
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if let Some(parent) = manifest_dir.parent() {
-        dirs.push(parent.to_path_buf());
-    }
-    dirs
+pub fn find_asset(file_name: &str) -> Option<PathBuf> {
+    candidate_dirs()
+        .into_iter()
+        .map(|dir| dir.join(file_name))
+        .find(|candidate| candidate.is_file())
 }
 
 fn should_join_group(group_name: &str) -> bool {

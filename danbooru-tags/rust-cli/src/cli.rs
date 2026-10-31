@@ -10,7 +10,11 @@ use crate::search::{
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "danbooru-tags", about = "Danbooru 标签检索")]
+#[command(
+    name = "danbooru-tags",
+    about = "Danbooru 标签检索",
+    after_help = "索引查找顺序：$DANBOORU_TAGS_DB → 可执行文件所在目录及其上级(3层) → 调用路径目录及其上级 → 当前工作目录。\n索引缺失时所有查询以退出码 1 失败，不会静默返回空结果；可用 --check-index 做前置探活。"
+)]
 struct Args {
     #[arg(long, short = 'k', default_value = "")]
     keyword: String,
@@ -44,10 +48,15 @@ struct Args {
     batch_workers: usize,
     #[arg(long = "match-mode", default_value = "auto")]
     match_mode: String,
+    #[arg(long = "check-index")]
+    check_index: bool,
 }
 
 pub fn run() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.check_index {
+        return print_index_status();
+    }
     if !args.batch_json.is_empty() || !args.batch_file.is_empty() {
         return print_batch_results(&args);
     }
@@ -104,6 +113,29 @@ pub fn run() -> anyhow::Result<()> {
     } else {
         println!("{}", format_results(&results, args.verbose));
     }
+    Ok(())
+}
+
+fn print_index_status() -> anyhow::Result<()> {
+    let (path, tags, groups) = crate::db::index_stats()?;
+    let searched = crate::db::candidate_dirs()
+        .iter()
+        .map(|dir| {
+            std::fs::canonicalize(dir)
+                .unwrap_or_else(|_| dir.clone())
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        to_string_pretty(&serde_json::json!({
+            "db_path": path.display().to_string(),
+            "tags": tags,
+            "groups": groups,
+            "searched_dirs": searched,
+        }))?
+    );
     Ok(())
 }
 

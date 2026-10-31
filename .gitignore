@@ -14,6 +14,10 @@ build/
 # Rust (danbooru-tags source)
 danbooru-tags/rust-cli/target/
 
+# 仓库内自带的 Rust 工具链（体积大，不入库）
+.cargo/
+.rustup/
+
 # Node
 node_modules/
 

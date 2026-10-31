@@ -22,6 +22,18 @@ description: |
 - 非 artist category 的 tag 不加 `@`，不作为画师。
 - 随机角色/服装/姿势/场景候选不使用 `--for-prompt`。
 
+## 0. 可用性前置检查（调用前必做一次）
+
+```bash
+"$cli" --check-index
+```
+
+- 退出码 0 → 输出 `db_path` / `tags` / `groups` / `searched_dirs`，索引就绪，继续正常检索。
+- 退出码非 0 → **停止**。索引缺失或不可读时，**任何**查询命令都会以退出码 1 失败且 stdout 为空，不得把空结果当作「查不到标签」，不得改用其他实现或猜测 tag。
+
+索引查找顺序：`$DANBOORU_TAGS_DB` → 可执行文件所在目录及其上 3 层（符号链接解析到真实文件）→ 调用路径目录及其上级 → 当前工作目录。
+二进制与 `tags_index.sqlite` 分开存放时，用 `DANBOORU_TAGS_DB=/abs/path/tags_index.sqlite` 显式指定。
+
 ## CLI 位置
 
 ```powershell
@@ -189,6 +201,7 @@ $file = Join-Path $env:TEMP "danbooru_batch.json"
 - `confirmed_tags` 不证明默认服装/发色稳定。
 - 不伪造 Danbooru tag。
 - CLI 不可用/非 0/非 JSON/字段缺失 → 停止，不切换旧实现。
+- 缺索引时所有查询以退出码 1 失败且 stdout 为空（不再静默返回空 JSON）；`--check-index` 是唯一探活入口。
 - `newest`/`recent`/`mid`/`early`/`old` 和 `year XXXX` 是 Anima 年代控制词，不需 tag 命中证明。
 
 ## 分组速查

@@ -144,6 +144,8 @@ description: |
 
 先写检索计划（最多 4 个语义锚点），再调用 `danbooru-tags` 批量查询。典型生图最多 1 次批量查询 + 1 次补查。
 
+调用前先探活一次：`"$cli" --check-index`。退出码非 0 → 立即停止（索引缺失时所有查询都会 exit 1 且 stdout 为空，空结果不代表「查不到标签」）；索引与二进制分开放置时用 `DANBOORU_TAGS_DB=/abs/path/tags_index.sqlite` 指定。
+
 检索顺序：
 
 1. 先用模型已知、用户给定或已解析的 Danbooru canonical tag 精确验证。
@@ -185,7 +187,7 @@ description: |
 ### 组装顺序
 
 ```
-hard_tags（quality/meta/year/safety → count → character → series → artist → confirmed appearance/tags） → soft_phrases → nltags_block
+hard_tags（meta/year/safety → count → character → series → artist → confirmed appearance/tags） → soft_phrases → nltags_block
 ```
 
 ### 三层分离
@@ -201,16 +203,20 @@ hard_tags（quality/meta/year/safety → count → character → series → arti
 - 不把离散 tag 列表写进 `nltags_block`。
 - 三层语义未分离检查前，不输出 args。
 
-### 质量前缀（双 LoRA 默认）
+### 固定前缀（无质量词）
+
+> ⛔ **不输出质量词**：`masterpiece` / `best quality` / `very aesthetic` / `highres` / `absurdres` / `score_9` / `score_8` / `score_7` 等一律不写。prompt 从年代/安全标签直接开始。
+
+双 LoRA 默认：
 
 ```
-masterpiece, very aesthetic, best quality, score_9, score_8, highres, absurdres, newest, year 2025, nsfw
+newest, year 2025, nsfw
 ```
 
 裸模型/对比测试：
 
 ```
-masterpiece, best quality, score_7, safe
+safe
 ```
 
 安全标签：`safe / sensitive / nsfw / explicit`。用户未指定时默认 `nsfw`。
@@ -294,7 +300,7 @@ bad anatomy, bad hands, bad feet, extra fingers, missing fingers, distorted face
 ### 标签格式
 
 - tag 用小写和空格：`red hair`，不写 `red_hair`。
-- `score_9` 等质量 token 保留下划线。
+- 不输出质量 token（`score_9` / `score_8` / `score_7` 等一律不写）；`year 2025` 保留原样空格写法。
 - 多角色同一作品/IP 时，`series` 只写一次，不重复。
 - 角色有明确作品/IP 时，`character` 和 `series` 都写。查不到独立 `series` tag 时只写 character。
 - `ye-pop`、`deviantart` 等 dataset tag 只在用户明确要求非纯 anime/欧美插画风格时使用；默认 Anima 生图不加入。
@@ -321,10 +327,10 @@ bad anatomy, bad hands, bad feet, extra fingers, missing fingers, distorted face
 
 ### hard_tags（Danbooru / Anima 硬锚点）
 
-- 质量、年代、安全、人数、角色、作品、画师
+- 年代、安全、人数、角色、作品、画师
 - confirmed 外观：发色、瞳色、发型、体型、服装、道具
 - confirmed 姿势/表情/场景单 tag
-- Anima 固定控制词：`score_9`、`newest`、`year 2025` 等
+- Anima 固定控制词：`newest`、`year 2025` 等（质量词已移除，不写 `score_9` 一类）
 
 ### soft_phrases（模型审美与情境短语）
 
@@ -499,7 +505,7 @@ node run_workflow_args.js submit <workflow_id> <args_json_file>
 
 **冲突检查：** solo ✓ / upper body 无冲突 ✓ / 窗光+教室同空间 ✓ / tag 与 nltags 不重复 ✓
 
-**prompt_11:** `masterpiece, very aesthetic, best quality, score_9, score_8, highres, absurdres, newest, year 2025, nsfw, 1girl, kanade tachibana, angel beats!, silver hair, yellow eyes, short hair, school uniform, classroom, window, looking at viewer, Place Kanade by the classroom window. Use soft window light from the left. Keep her face expressionless and readable with a softly blurred background.`
+**prompt_11:** `newest, year 2025, nsfw, 1girl, kanade tachibana, angel beats!, silver hair, yellow eyes, short hair, school uniform, classroom, window, looking at viewer, Place Kanade by the classroom window. Use soft window light from the left. Keep her face expressionless and readable with a softly blurred background.`
 
 **prompt_12:** `worst quality, low quality, score_1, score_2, score_3, blurry, bad anatomy, bad hands, bad feet, extra fingers, missing fingers, distorted face, text, watermark, logo`
 
@@ -516,7 +522,7 @@ node run_workflow_args.js submit <workflow_id> <args_json_file>
 **用户输入：** "用 @rella 画爱丽丝和魔理沙，春天幻想乡，强风樱花，CP 感"
 
 - 情境因果：突发强风卷起樱花 → 爱丽丝被花瓣扑脸 → 魔理沙一边按帽子一边帮她拂开花瓣 → 两人表情形成互动。
-- `hard_tags`：`masterpiece, very aesthetic, best quality, score_9, score_8, highres, absurdres, newest, year 2025, safe, 2girls, alice margatroid, kirisame marisa, touhou, @rella, blonde hair, blue eyes, green eyes, witch hat, shanghai doll, broom`
+- `hard_tags`：`newest, year 2025, safe, 2girls, alice margatroid, kirisame marisa, touhou, @rella, blonde hair, blue eyes, green eyes, witch hat, shanghai doll, broom`
 - `soft_phrases`：`spring, cherry blossom blizzard, strong wind, having fun, surprised giggling, playful grin, pink petals filling the air`
 - `nltags_block`：`Use a close-up two-shot focused on their faces and upper bodies. Place Alice on the left as petals hit her face, one hand raised to shield herself. Place Marisa on the right, holding her tilted witch hat while brushing a petal from Alice's cheek. Keep both faces sharp against a shallow blur of flying pink petals.`
 
